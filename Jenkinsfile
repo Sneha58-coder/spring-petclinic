@@ -2,40 +2,53 @@ pipeline {
     agent any
 
     environment {
-        // SonarCloud credentials ID (from Jenkins > Credentials)
-        SONAR_CLOUD = 'sonarcloud-creds'  
-        // Azure container registry credentials ID
-        ACR_CREDENTIALS = 'acr-creds'  
-        // Azure registry login server
-        ACR_LOGIN_SERVER = 'luckyregistry123.azurecr.io'  
-        // Kubernetes namespace (optional)
-        KUBE_NAMESPACE = 'default'  
+        // Azure Container Registry
+        ACR_NAME = "luckyregistry123"
+        ACR_LOGIN_SERVER = "luckyregistry123.azurecr.io"
         // Docker image name
-        IMAGE_NAME = 'spring-petclinic'  
-        // Tag for Docker image
-        IMAGE_TAG = 'latest'  
+        IMAGE_NAME = "spring-petclinic"
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        // Kubernetes namespace
+        K8S_NAMESPACE = "default"
+        // Trivy scan result path
+        TRIVY_REPORT = "trivy-report.json"
     }
 
     stages {
-        stage('Git Checkout') {
+        stage('Checkout') {
             steps {
                 git branch: 'main', url: 'https://github.com/Sneha58-coder/spring-petclinic.git'
             }
         }
 
-        stage('Maven Build') {
+        stage('Maven Validate') {
             steps {
-                sh 'mvn validate'
-                sh 'mvn compile'
-                sh 'mvn test'
-                sh 'mvn package'
+                sh './mvnw validate'
+            }
+        }
+
+        stage('Maven Compile') {
+            steps {
+                sh './mvnw compile'
+            }
+        }
+
+        stage('Maven Test') {
+            steps {
+                sh './mvnw test'
+            }
+        }
+
+        stage('Maven Package') {
+            steps {
+                sh './mvnw package -DskipTests'
             }
         }
 
         stage('SonarCloud Analysis') {
             steps {
-                withCredentials([usernamePassword(credentialsId: "${SONAR_CLOUD}", usernameVariable: 'SONAR_USER', passwordVariable: 'SONAR_PASS')]) {
-                    sh "mvn sonar:sonar -Dsonar.login=$SONAR_PASS"
+                withCredentials([usernamePassword(credentialsId: 'SONARCLOUD_CREDS', passwordVariable: 'SONAR_TOKEN', usernameVariable: 'SONAR_USER')]) {
+                    sh "./mvnw sonar:sonar -Dsonar.login=$SONAR_TOKEN"
                 }
             }
         }
@@ -48,40 +61,47 @@ pipeline {
 
         stage('Scan Image with Trivy') {
             steps {
-                sh "trivy image ${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+                sh "trivy image --exit-code 1 --format json -o ${TRIVY_REPORT} ${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG} || true"
             }
         }
 
-        stage('Push to ACR') {
+        stage('Login to ACR') {
             steps {
-                withCredentials([usernamePassword(credentialsId: "${ACR_CREDENTIALS}", usernameVariable: 'ACR_USER', passwordVariable: 'ACR_PASS')]) {
-                    sh "docker login ${ACR_LOGIN_SERVER} -u $ACR_USER -p $ACR_PASS"
-                    sh "docker push ${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
+                withCredentials([usernamePassword(credentialsId: 'AZURE_ACR_CREDS', usernameVariable: 'ACR_USER', passwordVariable: 'ACR_PASS')]) {
+                    sh "docker login ${ACR_LOGIN_SERVER} -u ${ACR_USER} -p ${ACR_PASS}"
                 }
+            }
+        }
+
+        stage('Push Image to ACR') {
+            steps {
+                sh "docker push ${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG}"
             }
         }
 
         stage('Deploy to Kubernetes') {
             steps {
-                // Apply Kubernetes manifests from your repo
-                sh "kubectl apply -f k8s/"
+                sh "kubectl set image deployment/spring-petclinic-deployment spring-petclinic=${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${IMAGE_TAG} -n ${K8S_NAMESPACE} || kubectl apply -f k8s/deployment.yaml -n ${K8S_NAMESPACE}"
             }
         }
 
         stage('Test Deployment') {
             steps {
-                sh "kubectl get pods -n ${KUBE_NAMESPACE}"
-                sh "kubectl get svc -n ${KUBE_NAMESPACE}"
+                sh "kubectl get pods -n ${K8S_NAMESPACE}"
+                sh "kubectl get svc -n ${K8S_NAMESPACE}"
             }
         }
     }
 
     post {
+        always {
+            archiveArtifacts artifacts: "${TRIVY_REPORT}", allowEmptyArchive: true
+        }
         success {
-            echo 'Pipeline completed successfully!'
+            echo "Pipeline completed successfully!"
         }
         failure {
-            echo 'Pipeline failed. Check logs for details.'
+            echo "Pipeline failed. Check the logs!"
         }
     }
 }
