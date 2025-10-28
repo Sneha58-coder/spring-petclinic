@@ -50,7 +50,7 @@ pipeline {
                 SCANNER_HOME = tool 'sonar-scanner' // Matches tool config in Jenkins
             }
             steps {
-                withSonarQubeEnv('sonarserver') {
+                withSonarQubeEnv('sonarcloud') {
                     sh '''
                         $SCANNER_HOME/bin/sonar-scanner \
                         -Dsonar.organization=jenkinspring \
